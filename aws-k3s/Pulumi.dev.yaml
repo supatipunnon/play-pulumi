@@ -1,0 +1,7 @@
+config:
+  aws-k3s:instanceType: t3.micro	
+  aws-k3s:vpcNetworkCidr: 10.8.0.0/16
+  aws-k3s:ami: ami-0094a5917d668fcd7
+  aws-k3s:publicKeyPath: ./ssh-key.pub
+  aws-k3s:privateKeyPath: ./ssh-key
+  aws:region: ap-southeast-1

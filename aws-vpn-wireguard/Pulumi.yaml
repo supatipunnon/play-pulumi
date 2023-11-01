@@ -1,0 +1,254 @@
+name: aws-vpn-wireguard
+runtime: yaml
+description: A Pulumi YAML program to deploy a virtual machine on Amazon EC2
+config:
+  #EC2
+  instanceType:
+    type: string
+    default: t4g.nano
+
+  #network  
+  vpcNetworkCidr:
+    type: string
+    default: 10.0.0.0/16
+  publicVpcNetworkCidr:
+    type: string
+    default: 10.0.1.0/24
+  privateVpcNetworkCidr:
+    type: string
+    default: 10.0.2.0/24
+
+  # EC2 pair key
+  # ami:
+  #   type: string
+  #   default: ami-09e0f5b7616be7855 # ubuntu-minimal/images/hvm-ssd/ubuntu-lunar-23.04-arm64-minimal-20230828
+  publicKeyPath:
+    type: string
+  privateKeyPath:
+    type: string
+  
+  # wireguard
+  wgClientPublicKey:
+    type: string
+  wgClientIp:
+    type: string
+
+variables:
+  ami:
+    fn::invoke:
+      function: aws:ec2:getAmi
+      arguments:
+        filters:
+          - name: name
+            values:
+              - ubuntu-minimal/images/hvm-ssd/ubuntu-lunar-23.04-arm64-minimal-*
+        mostRecent: true
+      return: id
+
+  availabilityZones:
+    fn::invoke:
+      function: aws:getAvailabilityZones
+
+  userData: |
+    #!/bin/bash
+    sudo apt-get update
+    sudo apt-get install -y python3
+    echo "Hello, World from Private Subnet!" > index.html
+    nohup python3 -m http.server 80 &
+
+  publicKey:
+    fn::readFile: ${publicKeyPath}
+
+  privateKey:
+    fn::secret:
+      fn::readFile: ${privateKeyPath}
+
+  wireGuardSetup:
+    fn::readFile: ./wireguard-setup.sh
+
+resources:
+  # Create VPC Network
+  vpc:
+    properties:
+      cidrBlock: ${vpcNetworkCidr}
+      enableDnsHostnames: true
+      enableDnsSupport: true
+      instanceTenancy: default
+    type: aws:ec2:Vpc
+
+  # Create a subnet that automatically assigns new instances a public IP address.
+  publicSubnet:
+    type: aws:ec2:Subnet
+    properties:
+      cidrBlock: ${publicVpcNetworkCidr}
+      mapPublicIpOnLaunch: true
+      vpcId: ${vpc.id}
+      availabilityZone: ${availabilityZones.names[0]}
+  
+  # Create an internet gateway.
+  gateway:
+    type: aws:ec2:InternetGateway
+    properties:
+      vpcId: ${vpc.id}
+
+  # Create a route table.
+  routeTable:
+    type: aws:ec2:RouteTable
+    properties:
+      routes:
+        - cidrBlock: 0.0.0.0/0
+          gatewayId: ${gateway.id}
+      vpcId: ${vpc.id}
+
+  # Associate the route table with the public subnet.
+  routeTableAssociation:
+    type: aws:ec2:RouteTableAssociation
+    properties:
+      routeTableId: ${routeTable.id}
+      subnetId: ${publicSubnet.id}
+  
+  # private subnet
+  privateSubnet:
+    type: aws:ec2:Subnet
+    properties:
+      cidrBlock: 10.0.2.0/24
+      mapPublicIpOnLaunch: false
+      vpcId: ${vpc.id}
+      availabilityZone: ${availabilityZones.names[0]}
+
+  # Create a security group allowing inbound access over port 80 and outbound
+  # access to anywhere.
+  secGroup:
+    properties:
+      description: Enable HTTP access
+      egress:
+        - cidrBlocks:
+            - 0.0.0.0/0
+          fromPort: 0
+          protocol: -1
+          toPort: 0
+      ingress:
+      # port 22 for SSH
+        - cidrBlocks:
+            - 0.0.0.0/0
+          fromPort: 22
+          protocol: tcp
+          toPort: 22
+      # port 80 for HTTP
+        - cidrBlocks:
+            - 0.0.0.0/0
+          fromPort: 80
+          protocol: tcp
+          toPort: 80
+      # ping
+        - cidrBlocks: 
+            - 0.0.0.0/0
+          fromPort: 8
+          protocol: icmp
+          toPort: 0
+      # wireguard
+        - cidrBlocks:
+            - 0.0.0.0/0
+          fromPort: 51820
+          protocol: udp
+          toPort: 51820
+      vpcId: ${vpc.id}
+    type: aws:ec2:SecurityGroup
+
+  # create EC2 keypair
+  keyPair:
+    type: aws:ec2:KeyPair
+    properties:
+      publicKey: ${publicKey}
+
+  # Create and launch an EC2 instance into the public subnet.
+  vpnServer:
+    type: aws:ec2:Instance
+    properties:
+      ami: ${ami}
+      instanceType: ${instanceType}
+      subnetId: ${publicSubnet.id}
+      tags:
+        Name: pulumi-vpn-server
+      vpcSecurityGroupIds:
+        - ${secGroup}
+      keyName: ${keyPair.id}
+
+  privateServer:
+    type: aws:ec2:Instance
+    properties:
+      ami: ${ami}
+      instanceType: ${instanceType}
+      subnetId: ${privateSubnet.id}
+      tags:
+        Name: private-pulumi-vpn-server
+      userData: ${userData}
+      vpcSecurityGroupIds:
+        - ${secGroup}
+      keyName: ${keyPair.id}
+
+  copyInstallScript:
+    type: command:remote:CopyFile
+    properties:
+      connection:
+        host: ${vpnServer.publicIp}
+        user: ubuntu
+        privateKey: ${privateKey}
+      localPath: ./wireguard-setup.sh
+      remotePath: /home/ubuntu/install-wireguard.sh
+    options:
+      dependsOn:
+        - ${vpnServer}
+  
+  # Install wireguard
+  installWireguard:
+    type: command:remote:Command
+    properties:
+      connection:
+        port: 22
+        host: ${vpnServer.publicIp}
+        user: ubuntu
+        privateKey: ${privateKey}
+      create: |
+        sudo chmod +x /home/ubuntu/install-wireguard.sh
+        sudo /home/ubuntu/install-wireguard.sh
+    options:
+      dependsOn:
+        - ${copyInstallScript}
+  
+  # Append VPN client public key to server config
+  addClientPeer:
+    type: command:remote:Command
+    properties:
+      connection:
+        port: 22
+        host: ${vpnServer.publicIp}
+        user: ubuntu
+        privateKey: ${privateKey}
+      create: |
+        sudo wg set wg0 peer ${wgClientPublicKey} allowed-ips ${wgClientIp}
+    options:
+      dependsOn:
+        - ${installWireguard}
+
+  # Get VPN server public key
+  getVPNPubKey:
+    type: command:remote:Command
+    properties:
+      connection:
+        port: 22
+        host: ${vpnServer.publicIp}
+        user: ubuntu
+        privateKey: ${privateKey}
+      create: sudo cat /etc/wireguard/publickey
+    options:
+      dependsOn:
+        - ${addClientPeer}
+
+outputs:
+  hostname: ${vpnServer.publicDns}
+  ip: ${vpnServer.publicIp}
+  url: http://${vpnServer.publicDns}
+  privateIp: ${privateServer.privateIp}
+  vpnPubKey: ${getVPNPubKey.stdout}
+  ami: ${ami}

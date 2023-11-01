@@ -1,0 +1,6 @@
+config:
+  aws-vpn-wireguard:privateKeyPath: .\ec2-vpn
+  aws-vpn-wireguard:publicKeyPath: .\ec2-vpn.pub
+  aws-vpn-wireguard:wgClientIp: 10.1.0.2
+  aws-vpn-wireguard:wgClientPublicKey: 6SpqcZfXqVvSBqhNISc96QbWt2TndCJO++51Wi7/0BQ=
+  aws:region: ap-southeast-1

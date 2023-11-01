@@ -1,0 +1,7 @@
+config:
+  aws-ec2:instanceType: t3.micro	
+  aws-ec2:vpcNetworkCidr: 10.8.0.0/16
+  aws-ec2:ami: ami-0094a5917d668fcd7
+  aws-ec2:publicKeyPath: ./ssh-key.pub
+  aws-ec2:privateKeyPath: ./ssh-key
+  aws:region: ap-southeast-1

@@ -1,0 +1,129 @@
+name: aws-k3s
+runtime: yaml
+description: k3s single node on ec2 instance
+config:
+  instanceType:
+    type: string
+    default: t3.micro
+  vpcNetworkCidr:
+    type: string
+    default: 10.0.0.0/16
+  ami:
+    type: string
+  publicKeyPath:
+    type: string
+  privateKeyPath:
+    type: string
+
+variables:
+  publicKey:
+    fn::readFile: ${publicKeyPath}
+  privateKey:
+    fn::readFile: ${privateKeyPath}
+
+resources:
+  # Create VPC.
+  vpc:
+    properties:
+      cidrBlock: ${vpcNetworkCidr}
+      enableDnsHostnames: true
+      enableDnsSupport: true
+    type: aws:ec2:Vpc
+
+  subnet:
+    properties:
+      cidrBlock: 10.8.1.0/24
+      mapPublicIpOnLaunch: true
+      vpcId: ${vpc.id}
+    type: aws:ec2:Subnet
+
+  gateway:
+    properties:
+      vpcId: ${vpc.id}
+    type: aws:ec2:InternetGateway
+ 
+  routeTable:
+    properties:
+      routes:
+        - cidrBlock: 0.0.0.0/0
+          gatewayId: ${gateway.id}
+      vpcId: ${vpc.id}
+    type: aws:ec2:RouteTable
+  
+  routeTableAssociation:
+    properties:
+      routeTableId: ${routeTable.id}
+      subnetId: ${subnet.id}
+    type: aws:ec2:RouteTableAssociation
+  
+  secGroup:
+    properties:
+      description: Enable HTTP access
+      egress:
+        - cidrBlocks:
+            - 0.0.0.0/0
+          fromPort: 0
+          protocol: -1
+          toPort: 0
+      ingress:
+        - cidrBlocks:
+            - 0.0.0.0/0
+          fromPort: 22
+          protocol: tcp
+          toPort: 22
+        - cidrBlocks:
+            - 0.0.0.0/0
+          fromPort: 6443
+          protocol: tcp
+          toPort: 6443
+        - cidrBlocks:
+            - 0.0.0.0/0
+          fromPort: 80
+          protocol: tcp
+          toPort: 80
+        # enable ping
+        - cidrBlocks:
+            - 0.0.0.0/0
+          fromPort: -1
+          protocol: icmp
+          toPort: -1
+      vpcId: ${vpc.id}
+    type: aws:ec2:SecurityGroup
+
+  keyPair:
+    type: aws:ec2:KeyPair
+    properties:
+      publicKey: ${publicKey}
+ 
+  server:
+    properties:
+      ami: ${ami}
+      instanceType: ${instanceType}
+      subnetId: ${subnet.id}
+      tags:
+        Name: webserver
+      vpcSecurityGroupIds:
+        - ${secGroup}
+      keyName: ${keyPair.keyName}
+    type: aws:ec2:Instance
+
+  # installK3s:
+  #   type: command:remote:Command
+  #   properties:
+  #     connection:
+  #       host: ${server.publicIp}
+  #       user: ec2-user
+  #       port: 22
+  #       privateKey: ${privateKey}
+  #     create: |
+  #       curl -sfL https://get.k3s.io | sh -
+  #   options:
+  #     dependsOn:
+  #       - ${server}
+  
+
+         
+outputs:
+  hostname: ${server.publicDns}
+  ip: ${server.publicIp}
+  url: http://${server.publicDns}
